@@ -14,6 +14,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from typing import Optional
 
 from slack_bolt import App
@@ -35,6 +36,38 @@ app = App(
 # In-memory conversation state per channel/thread
 # Key: (channel_id, thread_ts) -> conversation state
 conversations: dict[tuple[str, str], dict] = {}
+
+# Lock per conversation to prevent race conditions between concurrent event handlers
+_convo_locks: dict[tuple[str, str], threading.Lock] = {}
+_locks_lock = threading.Lock()  # Protects _convo_locks dict itself
+
+# Deduplication: track recently processed message timestamps to avoid double-processing
+_processed_messages: dict[str, float] = {}  # message_ts -> time.time()
+_dedup_lock = threading.Lock()
+_DEDUP_TTL = 30  # seconds to remember a message
+
+
+def _get_lock(key: tuple[str, str]) -> threading.Lock:
+    """Get or create a lock for a conversation key."""
+    with _locks_lock:
+        if key not in _convo_locks:
+            _convo_locks[key] = threading.Lock()
+        return _convo_locks[key]
+
+
+def _is_duplicate(message_ts: str) -> bool:
+    """Check if this message was already processed. Returns True if duplicate."""
+    now = time.time()
+    with _dedup_lock:
+        # Clean old entries
+        expired = [k for k, v in _processed_messages.items() if now - v > _DEDUP_TTL]
+        for k in expired:
+            del _processed_messages[k]
+        # Check and mark
+        if message_ts in _processed_messages:
+            return True
+        _processed_messages[message_ts] = now
+        return False
 
 
 def _get_convo_key(channel: str, thread_ts: Optional[str], ts: str) -> tuple[str, str]:
@@ -69,11 +102,17 @@ def _derive_client_id(channel_name: str) -> str:
 @app.event("app_mention")
 def handle_mention(event, say, client):
     """Handle @agent mentions in client channels."""
-    print(f"[handle_mention] Received mention event: {event}")
+    ts = event["ts"]
+    print(f"[handle_mention] ts={ts}, thread_ts={event.get('thread_ts')}")
+
+    # Deduplicate: prevent double-processing if both mention+message handlers fire
+    if _is_duplicate(ts):
+        print(f"[handle_mention] Skipping duplicate ts={ts}")
+        return
+
     channel = event["channel"]
     user = event["user"]
     text = event.get("text", "").strip()
-    ts = event["ts"]
     thread_ts = event.get("thread_ts")
 
     # Remove the bot mention from the text
@@ -101,59 +140,72 @@ def handle_mention(event, say, client):
     convo_key = _get_convo_key(channel, thread_ts, ts)
     convo = _get_or_create_convo(convo_key, client_id)
 
-    # Route based on conversation phase
-    if convo["phase"] == "scoping":
-        _handle_scoping(convo, convo_key, text, say, client, channel, thread_ts or ts)
-    elif convo["phase"] == "prototyping":
-        _handle_prototype_feedback(convo, convo_key, text, say, client, channel, thread_ts or ts)
-    elif convo["phase"] == "confirming":
-        _handle_confirmation(convo, convo_key, text, say, client, channel, thread_ts or ts)
-    elif convo["phase"] == "submitted":
-        say(
-            text="This request has already been submitted! Start a new thread for a new feature request.",
-            thread_ts=thread_ts or ts,
-        )
+    # Acquire lock to prevent concurrent access to this conversation
+    lock = _get_lock(convo_key)
+    with lock:
+        # Route based on conversation phase
+        if convo["phase"] == "scoping":
+            _handle_scoping(convo, convo_key, text, say, client, channel, thread_ts or ts)
+        elif convo["phase"] == "prototyping":
+            _handle_prototype_feedback(convo, convo_key, text, say, client, channel, thread_ts or ts)
+        elif convo["phase"] == "confirming":
+            _handle_confirmation(convo, convo_key, text, say, client, channel, thread_ts or ts)
+        elif convo["phase"] == "submitted":
+            say(
+                text="This request has already been submitted! Start a new thread for a new feature request.",
+                thread_ts=thread_ts or ts,
+            )
 
 
 @app.event("message")
 def handle_message(event, say, client):
     """Handle direct messages in threads (no @mention needed after first message)."""
-    print(f"[handle_message] Received message event: subtype={event.get('subtype')}, thread_ts={event.get('thread_ts')}, bot_id={event.get('bot_id')}")
     # Only process threaded replies
     thread_ts = event.get("thread_ts")
     if not thread_ts:
         return
 
-    # Skip bot messages
-    if event.get("bot_id") or event.get("subtype") == "bot_message":
+    # Skip bot messages and subtypes (file_share, message_changed, etc.)
+    if event.get("bot_id") or event.get("subtype"):
+        return
+
+    ts = event["ts"]
+    print(f"[handle_message] ts={ts}, thread_ts={thread_ts}")
+
+    # Deduplicate: if handle_mention already processed this, skip
+    if _is_duplicate(ts):
+        print(f"[handle_message] Skipping duplicate ts={ts}")
         return
 
     channel = event["channel"]
     text = event.get("text", "").strip()
-    ts = event["ts"]
+
+    # Strip any @mention prefix (user might @mention bot in thread replies)
+    if text.startswith("<@"):
+        close_bracket = text.find(">")
+        if close_bracket != -1:
+            text = text[close_bracket + 1:].strip()
 
     convo_key = _get_convo_key(channel, thread_ts, ts)
 
     # Only respond if we have an active conversation in this thread
     if convo_key not in conversations:
+        print(f"[handle_message] No conversation found for key={convo_key}")
         return
 
     convo = conversations[convo_key]
 
-    # Get channel info
-    try:
-        channel_info = client.conversations_info(channel=channel)
-        channel_name = channel_info["channel"]["name"]
-    except Exception:
-        channel_name = channel
-
-    # Route based on phase
-    if convo["phase"] == "scoping":
-        _handle_scoping(convo, convo_key, text, say, client, channel, thread_ts)
-    elif convo["phase"] == "prototyping":
-        _handle_prototype_feedback(convo, convo_key, text, say, client, channel, thread_ts)
-    elif convo["phase"] == "confirming":
-        _handle_confirmation(convo, convo_key, text, say, client, channel, thread_ts)
+    # Acquire lock to prevent concurrent access
+    lock = _get_lock(convo_key)
+    with lock:
+        print(f"[handle_message] Processing phase={convo['phase']}")
+        # Route based on phase
+        if convo["phase"] == "scoping":
+            _handle_scoping(convo, convo_key, text, say, client, channel, thread_ts)
+        elif convo["phase"] == "prototyping":
+            _handle_prototype_feedback(convo, convo_key, text, say, client, channel, thread_ts)
+        elif convo["phase"] == "confirming":
+            _handle_confirmation(convo, convo_key, text, say, client, channel, thread_ts)
 
 
 def _handle_scoping(convo, convo_key, text, say, slack_client, channel, thread_ts):
@@ -368,23 +420,40 @@ def _handle_prototype_feedback(convo, convo_key, text, say, slack_client, channe
     variant_context = "\n".join(
         f"- {v.get('name', 'Variant')}: {v.get('description', '')}" for v in variants_list
     )
-    mode = proto_results.get("mode", "local")
     context_msg = (
         f"The client was shown these 3 prototype variants:\n{variant_context}\n\n"
         f"The client's feedback is: {text}"
     )
 
-    response = scoping_agent.get_response(
-        client_id=client_id,
-        conversation_history=convo["history"],
-        user_message=context_msg,
-    )
+    try:
+        response = scoping_agent.get_response(
+            client_id=client_id,
+            conversation_history=convo["history"],
+            user_message=context_msg,
+        )
+    except Exception as e:
+        print(f"[_handle_prototype_feedback] ERROR: {e}")
+        say(text="Sorry, I ran into an issue. Could you try again?", thread_ts=thread_ts)
+        return
 
     convo["history"].append({"role": "user", "content": text})
     convo["history"].append({"role": "assistant", "content": response})
 
+    # If client picked an option -> auto-create GitHub issue (no extra confirmation)
     if scoping_agent.is_ready_to_submit(response):
-        _handle_submit(convo, response, say, slack_client, channel, thread_ts)
+        display_response = response.replace("[READY_TO_SUBMIT]", "").strip()
+        # Strip the JSON block from display (the client doesn't need to see it)
+        if "```json" in display_response:
+            before_json = display_response[:display_response.index("```json")].strip()
+            after_end = display_response.find("```", display_response.index("```json") + 7)
+            if after_end != -1:
+                after_json = display_response[after_end + 3:].strip()
+                display_response = f"{before_json}\n{after_json}".strip()
+            else:
+                display_response = before_json
+        if display_response:
+            say(text=display_response, thread_ts=thread_ts)
+        _auto_submit_issue(convo, response, say, slack_client, channel, thread_ts)
         return
 
     # Check if they want another prototype round
@@ -409,29 +478,33 @@ def _handle_confirmation(convo, convo_key, text, say, slack_client, channel, thr
 
 
 def _handle_submit(convo, response, say, slack_client, channel, thread_ts):
-    """Extract the spec and ask for final confirmation."""
+    """Extract the spec and ask for final confirmation (legacy path from scoping phase)."""
     display_response = response.replace("[READY_TO_SUBMIT]", "").strip()
+    say(text=display_response, thread_ts=thread_ts)
+    _auto_submit_issue(convo, response, say, slack_client, channel, thread_ts)
 
-    # Extract the feature spec
+
+def _auto_submit_issue(convo, response, say, slack_client, channel, thread_ts):
+    """Extract spec from response and create GitHub issue automatically."""
     spec = scoping_agent.extract_feature_spec(response)
     if spec:
         convo["feature_spec"] = spec
-        convo["phase"] = "confirming"
-
-        say(text=display_response, thread_ts=thread_ts)
-        say(
-            text=(
-                ":clipboard: *Ready to submit this to the engineering team.*\n"
-                "Reply 'confirm' to create the GitHub issue, or tell me what to change."
-            ),
-            thread_ts=thread_ts,
-        )
+        _submit_issue(convo, say, slack_client, channel, thread_ts)
     else:
-        say(
-            text="I tried to generate the final spec but something went wrong. Let me try again — could you summarize what you'd like one more time?",
-            thread_ts=thread_ts,
-        )
-        convo["phase"] = "scoping"
+        # Couldn't parse spec — build one from conversation context
+        print("[_auto_submit_issue] Could not extract JSON spec, building from conversation")
+        feature_desc = _extract_feature_description(convo)
+        fallback_spec = {
+            "title": feature_desc[:80],
+            "description": feature_desc,
+            "target_area": "dashboard",
+            "requirements": [feature_desc],
+            "out_of_scope": [],
+            "client_preferences": [],
+            "complexity_estimate": "medium",
+        }
+        convo["feature_spec"] = fallback_spec
+        _submit_issue(convo, say, slack_client, channel, thread_ts)
 
 
 def _submit_issue(convo, say, slack_client, channel, thread_ts):
