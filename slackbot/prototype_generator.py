@@ -145,8 +145,9 @@ def format_devin_results_for_slack(results: list[dict]) -> list[dict]:
     for i, result in enumerate(results):
         key = chr(65 + i)  # A, B, C
         structured = result.get("structured_output") or {}
-        prs = result.get("pull_requests", [])
-        pr_url = prs[0].get("url", "") if prs else ""
+        # v1 API returns pull_request (singular object with url), not pull_requests array
+        pr_info = result.get("pull_request") or {}
+        pr_url = pr_info.get("url", "") if isinstance(pr_info, dict) else ""
 
         formatted.append({
             "key": key,

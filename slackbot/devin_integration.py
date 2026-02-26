@@ -1,13 +1,18 @@
 """
 Devin API Integration — production prototype generation.
 
-Uses the Devin v3 API (Service Users) to:
+Uses the Devin v1 API (apk_ personal/service keys) to:
 1. Create prototype sessions that modify the client project repo
 2. Poll sessions and extract structured output (screenshot URLs, descriptions)
 3. Create and manage playbooks for prototype generation
 4. Sync client models to Knowledge Notes
 
 API Reference: https://docs.devin.ai/api-reference/overview
+
+Endpoint summary (v1):
+  Sessions:  POST /v1/sessions, GET /v1/sessions, GET /v1/sessions/{id}, POST /v1/sessions/{id}/message
+  Knowledge: GET /v1/knowledge, POST /v1/knowledge, PUT /v1/knowledge/{id}, DELETE /v1/knowledge/{id}
+  Playbooks: GET /v1/playbooks, POST /v1/playbooks
 """
 
 import json
@@ -19,8 +24,8 @@ import requests
 
 import config
 
-# v3 Organization API — org_id is resolved from the cog_ credential
-BASE_URL = "https://api.devin.ai/v3/organizations"
+# v1 API base URL — works with both apk_ and apk_user_ keys
+BASE_URL = "https://api.devin.ai/v1"
 
 # Structured output schema for prototype sessions
 PROTOTYPE_OUTPUT_SCHEMA = {
@@ -173,16 +178,22 @@ def ensure_prototype_playbook() -> Optional[str]:
 def create_session(
     prompt: str,
     playbook_id: Optional[str] = None,
-    repos: Optional[list[str]] = None,
     structured_output_schema: Optional[dict] = None,
     tags: Optional[list[str]] = None,
     title: Optional[str] = None,
+    knowledge_ids: Optional[list[str]] = None,
 ) -> Optional[dict]:
     """
-    Create a Devin session via v3 API.
+    Create a Devin session via v1 API.
 
-    Returns the session response dict with session_id, url, status, etc.
+    Returns the session response dict with session_id, url, is_new_session.
     Returns None on failure.
+
+    v1 create session params:
+      - prompt (required)
+      - playbook_id, tags, title, structured_output_schema
+      - knowledge_ids, secret_ids, session_secrets
+      - max_acu_limit, idempotent, snapshot_id, unlisted
     """
     if not is_configured():
         return None
@@ -190,14 +201,14 @@ def create_session(
     payload: dict = {"prompt": prompt}
     if playbook_id:
         payload["playbook_id"] = playbook_id
-    if repos:
-        payload["repos"] = repos
     if structured_output_schema:
         payload["structured_output_schema"] = structured_output_schema
     if tags:
         payload["tags"] = tags
     if title:
         payload["title"] = title
+    if knowledge_ids is not None:
+        payload["knowledge_ids"] = knowledge_ids
 
     try:
         resp = requests.post(
@@ -217,7 +228,13 @@ def create_session(
 
 
 def get_session(session_id: str) -> Optional[dict]:
-    """Get the current state of a Devin session."""
+    """
+    Get the current state of a Devin session.
+
+    v1 response includes:
+      session_id, status, status_enum, title, created_at, updated_at,
+      messages, playbook_id, pull_request, snapshot_id, structured_output, tags
+    """
     if not is_configured():
         return None
 
@@ -238,18 +255,15 @@ def is_session_done(session: dict) -> bool:
     """
     Check if a session has finished (successfully or with error).
 
-    v3 status values: new, claimed, running, exit, error, suspended, resuming
-    status_detail when running: working, waiting_for_user, waiting_for_approval, finished
+    v1 status_enum values:
+      working, blocked, expired, finished,
+      suspend_requested, suspend_requested_frontend,
+      resume_requested, resume_requested_frontend, resumed
     """
-    status = session.get("status", "")
-    status_detail = session.get("status_detail", "")
+    status_enum = session.get("status_enum", "")
 
     # Terminal states
-    if status in ("exit", "error", "suspended"):
-        return True
-
-    # Running but finished
-    if status == "running" and status_detail == "finished":
+    if status_enum in ("finished", "expired"):
         return True
 
     return False
@@ -257,15 +271,7 @@ def is_session_done(session: dict) -> bool:
 
 def is_session_successful(session: dict) -> bool:
     """Check if a session completed successfully."""
-    status = session.get("status", "")
-    status_detail = session.get("status_detail", "")
-
-    if status == "running" and status_detail == "finished":
-        return True
-    if status == "exit":
-        return True
-
-    return False
+    return session.get("status_enum") == "finished"
 
 
 def poll_session(
@@ -334,6 +340,7 @@ def create_prototype_sessions(
     feature_description: str,
     variant_approaches: list[dict],
     client_context: str = "",
+    knowledge_ids: Optional[list[str]] = None,
 ) -> list[dict]:
     """
     Create parallel Devin sessions to generate prototype variants.
@@ -361,10 +368,10 @@ def create_prototype_sessions(
         session = create_session(
             prompt=prompt,
             playbook_id=playbook_id,
-            repos=[repo],
             structured_output_schema=PROTOTYPE_OUTPUT_SCHEMA,
             tags=["scope-agent", "prototype", f"variant-{i+1}"],
             title=f"Prototype: {variant['name']}",
+            knowledge_ids=knowledge_ids,
         )
 
         if session:
@@ -404,10 +411,9 @@ def poll_prototype_sessions(
                 "variant_name": session_info.get("variant_name", "Unknown"),
                 "variant_approach": session_info.get("variant_approach", ""),
                 "url": final.get("url", ""),
-                "status": final.get("status", "unknown"),
-                "status_detail": final.get("status_detail", ""),
+                "status_enum": final.get("status_enum", "unknown"),
                 "structured_output": final.get("structured_output"),
-                "pull_requests": final.get("pull_requests", []),
+                "pull_request": final.get("pull_request"),
                 "success": is_session_successful(final),
             }
             if on_variant_complete:
@@ -417,7 +423,7 @@ def poll_prototype_sessions(
             "session_id": session_id,
             "variant_name": session_info.get("variant_name", "Unknown"),
             "success": False,
-            "status": "timeout",
+            "status_enum": "timeout",
         }
 
     # Poll sessions in parallel using threads
@@ -466,6 +472,25 @@ Keep changes minimal and focused on this one feature variant.
 # --- Knowledge Notes ---
 
 
+def list_knowledge() -> list[dict]:
+    """List all knowledge entries for the organization."""
+    if not is_configured():
+        return []
+
+    try:
+        resp = requests.get(
+            f"{BASE_URL}/knowledge",
+            headers=_headers(),
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get("knowledge", [])
+        return []
+    except requests.RequestException:
+        return []
+
+
 def sync_knowledge_note(
     client_id: str,
     content: str,
@@ -474,29 +499,41 @@ def sync_knowledge_note(
 ) -> Optional[str]:
     """
     Create or update a Knowledge Note for a client model.
-    Returns the note_id or None on failure.
+
+    v1 Knowledge API:
+      POST /v1/knowledge — create (fields: name, body, trigger_description, pinned_repo)
+      PUT  /v1/knowledge/{id} — update (fields: name, body, trigger_description, pinned_repo)
+
+    Returns the knowledge note id or None on failure.
     """
     if not is_configured():
         return None
 
     try:
         if note_id:
-            resp = requests.patch(
-                f"{BASE_URL}/knowledge/{note_id}",
-                headers=_headers(),
-                json={
-                    "title": f"Client Model: {client_id}",
-                    "body": content,
-                },
-                timeout=15,
-            )
-        else:
+            # Update existing note via PUT
             payload = {
-                "title": f"Client Model: {client_id}",
+                "name": f"Client Model: {client_id}",
                 "body": content,
             }
             if trigger_description:
                 payload["trigger_description"] = trigger_description
+
+            resp = requests.put(
+                f"{BASE_URL}/knowledge/{note_id}",
+                headers=_headers(),
+                json=payload,
+                timeout=15,
+            )
+        else:
+            # Create new note via POST
+            payload = {
+                "name": f"Client Model: {client_id}",
+                "body": content,
+            }
+            if trigger_description:
+                payload["trigger_description"] = trigger_description
+
             resp = requests.post(
                 f"{BASE_URL}/knowledge",
                 headers=_headers(),
@@ -506,7 +543,8 @@ def sync_knowledge_note(
 
         if resp.status_code in (200, 201):
             data = resp.json()
-            return data.get("knowledge_id") or data.get("note_id")
+            # v1 returns "id" for knowledge entries
+            return data.get("id") or data.get("knowledge_id") or data.get("note_id")
 
         print(f"Knowledge note sync failed: {resp.status_code} {resp.text[:200]}")
         return None
