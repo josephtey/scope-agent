@@ -251,11 +251,7 @@ def _handle_scoping(convo, convo_key, text, say, slack_client, channel, thread_t
 
 
 def _generate_and_send_prototypes(convo, say, slack_client, channel, thread_ts):
-    """Generate 3 prototype variants and post to the thread.
-
-    Uses Devin API if configured (creates real PRs on sample-client-project),
-    otherwise falls back to local Playwright screenshots.
-    """
+    """Generate 3 prototype variants using Devin API and post screenshots to the thread."""
     convo["prototype_round"] += 1
     client_id = convo["client_id"]
 
@@ -281,10 +277,7 @@ def _generate_and_send_prototypes(convo, say, slack_client, channel, thread_ts):
             print(f"[_generate] mode={mode}, num_variants={len(variants)}")
             for variant in variants:
                 print(f"[_generate] Sending variant: {variant.get('name')}, success={variant.get('success')}, screenshots={variant.get('screenshot_urls', [])}")
-                if mode == "devin":
-                    _send_devin_variant(variant, slack_client, channel, thread_ts)
-                else:
-                    _send_local_variant(variant, slack_client, channel, thread_ts)
+                _send_devin_variant(variant, slack_client, channel, thread_ts)
 
             slack_client.chat_postMessage(
                 channel=channel,
@@ -382,32 +375,6 @@ def _send_devin_variant(variant: dict, slack_client, channel: str, thread_ts: st
         thread_ts=thread_ts,
     )
 
-
-def _send_local_variant(variant: dict, slack_client, channel: str, thread_ts: str):
-    """Send a locally-generated variant screenshot to Slack."""
-    name = variant.get("name", "Variant")
-    description = variant.get("description", "")
-    path = variant.get("screenshot_path", "")
-
-    if path and path.endswith(".png"):
-        try:
-            slack_client.files_upload_v2(
-                channel=channel,
-                file=path,
-                filename=f"prototype_{variant.get('key', 'x').lower()}.png",
-                title=name,
-                initial_comment=f"*{name}*\n{description}",
-                thread_ts=thread_ts,
-            )
-            return
-        except Exception:
-            pass
-
-    slack_client.chat_postMessage(
-        channel=channel,
-        text=f"*{name}*\n{description}",
-        thread_ts=thread_ts,
-    )
 
 
 def _handle_prototype_feedback(convo, convo_key, text, say, slack_client, channel, thread_ts):
