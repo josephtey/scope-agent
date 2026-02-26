@@ -149,25 +149,21 @@ def format_devin_results_for_slack(results: list[dict]) -> list[dict]:
     """
     Format Devin prototype results into a Slack-friendly format.
 
-    Returns list of dicts with: key, name, description, pr_url, session_url
+    Each result now includes screenshot_urls extracted from session messages
+    (ATTACHMENT:"https://app.devin.ai/attachments/..." URLs).
     """
     formatted = []
     for i, result in enumerate(results):
         key = chr(65 + i)  # A, B, C
         structured = result.get("structured_output") or {}
-        # v1 API returns pull_request (singular object with url), not pull_requests array
-        pr_info = result.get("pull_request") or {}
-        pr_url = pr_info.get("url", "") if isinstance(pr_info, dict) else ""
+        screenshot_urls = result.get("screenshot_urls", [])
 
         formatted.append({
             "key": key,
             "name": structured.get("variant_name", result.get("variant_name", f"Option {key}")),
             "description": structured.get("description", result.get("variant_approach", "No description")),
-            "pr_url": pr_url,
             "session_url": result.get("url", ""),
-            "files_changed": structured.get("files_changed", []),
-            "screenshot_url": structured.get("screenshot_url", ""),
-            "preview_url": structured.get("preview_url", ""),
+            "screenshot_urls": screenshot_urls,
             "success": result.get("success", False),
         })
 
@@ -337,14 +333,13 @@ def generate_screenshots_sync(output_dir: str) -> dict[str, str]:
 # --- Unified Interface ---
 
 def should_use_devin() -> bool:
-    """Check if we should use real Devin sessions or fall back to local screenshots.
+    """Check if we should use real Devin sessions for screenshot-based prototypes.
 
-    Currently always returns False — we use local Playwright screenshots
-    for quick visual prototypes. Devin sessions (which create real PRs)
-    are available but reserved for the final build phase, not the
-    rapid-iteration prototyping loop.
+    When configured, Devin sessions will: modify the code, run the app,
+    take a browser screenshot, and return the screenshot URL. No PRs are created.
+    Falls back to local Playwright screenshots if Devin is not configured.
     """
-    return False
+    return devin_integration.is_configured()
 
 
 def generate_prototypes(

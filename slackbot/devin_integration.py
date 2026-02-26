@@ -38,16 +38,12 @@ PROTOTYPE_OUTPUT_SCHEMA = {
             "items": {"type": "string"},
             "description": "List of files modified in the prototype",
         },
-        "screenshot_url": {
-            "type": "string",
-            "description": "URL of a screenshot of the prototype (if available)",
-        },
-        "preview_url": {
-            "type": "string",
-            "description": "URL where the prototype can be previewed live (if deployed)",
+        "screenshot_taken": {
+            "type": "boolean",
+            "description": "Whether a browser screenshot was taken of the running app",
         },
     },
-    "required": ["variant_name", "description", "files_changed"],
+    "required": ["variant_name", "description", "files_changed", "screenshot_taken"],
 }
 
 # The playbook content that instructs Devin how to generate a prototype variant
@@ -56,6 +52,7 @@ PROTOTYPE_PLAYBOOK_BODY = """# Prototype Variant Generator
 ## Goal
 You are generating a UI prototype variant for a B2B SaaS dashboard app.
 The client has requested a specific feature change, and you must implement ONE approach to it.
+Your deliverable is a SCREENSHOT of the running app showing the change.
 
 ## Procedure
 1. Clone the repository specified in the prompt
@@ -63,14 +60,22 @@ The client has requested a specific feature change, and you must implement ONE a
 3. Read the existing code to understand the component structure
 4. Implement the requested feature change following the specified approach
 5. Run `npm run build` to verify the code compiles
-6. Take a screenshot of the result if possible
-7. Create a PR with your changes (do NOT merge it)
+6. Start the app with `npm run dev`
+7. Open the browser and navigate to the running app (usually http://localhost:5173)
+8. Take a browser screenshot showing the feature change
+9. Update structured output with your results
+
+## IMPORTANT — Do NOT create a PR or push any code.
+This is a prototype preview only. The goal is to produce a screenshot of the
+working feature so the client can see what it looks like. Do NOT create branches,
+PRs, or push any code. Just implement locally, run, and screenshot.
 
 ## Specifications
 - Make minimal, focused changes — only modify what's needed for this variant
 - Follow the existing code style and conventions
 - Keep the same overall layout and color scheme
 - The change should be visually distinct from the current state
+- You MUST take a browser screenshot of the running app after implementing the change
 - Update structured output with your results in this format:
 
 ```json
@@ -78,8 +83,7 @@ The client has requested a specific feature change, and you must implement ONE a
   "variant_name": "Short name (e.g., 'Dropdown Filter')",
   "description": "One sentence describing the approach",
   "files_changed": ["src/components/Example.jsx"],
-  "screenshot_url": "URL if you took a screenshot",
-  "preview_url": "URL if you deployed a preview"
+  "screenshot_taken": true
 }
 ```
 
@@ -87,6 +91,8 @@ The client has requested a specific feature change, and you must implement ONE a
 - Focus on the UI change only — don't refactor unrelated code
 - If the prompt says "Option A", "Option B", etc., implement ONLY that option
 - Keep it simple and clean — this is a prototype, not production code
+- The screenshot is the most important deliverable — make sure to take one!
+- Do NOT create a PR. Do NOT push code. Just implement, run, screenshot.
 """
 
 
@@ -412,6 +418,7 @@ def poll_prototype_sessions(
         session_id = session_info["session_id"]
         final = poll_session(session_id)
         if final:
+            screenshot_urls = extract_screenshot_urls(final)
             result = {
                 "session_id": session_id,
                 "variant_name": session_info.get("variant_name", "Unknown"),
@@ -420,7 +427,8 @@ def poll_prototype_sessions(
                 "status_enum": final.get("status_enum", "unknown"),
                 "structured_output": final.get("structured_output"),
                 "pull_request": final.get("pull_request"),
-                "success": is_session_successful(final),
+                "screenshot_urls": screenshot_urls,
+                "success": is_session_successful(final) or bool(screenshot_urls),
             }
             if on_variant_complete:
                 on_variant_complete(result)
@@ -430,6 +438,7 @@ def poll_prototype_sessions(
             "variant_name": session_info.get("variant_name", "Unknown"),
             "success": False,
             "status_enum": "timeout",
+            "screenshot_urls": [],
         }
 
     # Poll sessions in parallel using threads
@@ -467,12 +476,34 @@ def _build_variant_prompt(
 1. Clone the repo and understand the current dashboard structure
 2. Implement the feature using the approach described above
 3. Make sure `npm run build` passes
-4. Create a PR with your changes (title: "Prototype: {variant_name}")
-5. Update the structured output with your results
+4. Run the app with `npm run dev`
+5. Open the browser and navigate to the running app (http://localhost:5173)
+6. Take a browser screenshot of the app showing the feature change
+7. Update the structured output with your results
 
+IMPORTANT: Do NOT create a PR or push any code. Just implement locally, run, and screenshot.
 Keep changes minimal and focused on this one feature variant.
 """
     return prompt
+
+
+def extract_screenshot_urls(session: dict) -> list[str]:
+    """
+    Extract screenshot/attachment URLs from a Devin session's messages.
+
+    Devin embeds screenshots in messages using the format:
+        ATTACHMENT:"https://app.devin.ai/attachments/{uuid}/{filename}"
+
+    Returns a list of attachment URLs found in the session messages.
+    """
+    import re
+    urls = []
+    for msg in session.get("messages", []):
+        content = msg.get("message", "")
+        # Match ATTACHMENT:"url" pattern
+        matches = re.findall(r'ATTACHMENT:"(https://app\.devin\.ai/attachments/[^"]+)"', content)
+        urls.extend(matches)
+    return urls
 
 
 # --- Knowledge Notes ---
