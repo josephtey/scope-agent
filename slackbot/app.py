@@ -244,28 +244,49 @@ def _extract_feature_description(convo: dict) -> str:
 
 
 def _send_devin_variant(variant: dict, slack_client, channel: str, thread_ts: str):
-    """Send a Devin-generated variant to Slack."""
+    """Send a Devin-generated variant screenshot to Slack."""
+    import tempfile
+    import requests as req
+
     name = variant.get("name", "Variant")
     description = variant.get("description", "")
-    pr_url = variant.get("pr_url", "")
-    session_url = variant.get("session_url", "")
-    files_changed = variant.get("files_changed", [])
+    screenshot_urls = variant.get("screenshot_urls", [])
     success = variant.get("success", False)
 
-    if success:
-        text = f"*{name}*\n{description}"
-        if pr_url:
-            text += f"\n:link: <{pr_url}|View PR>"
-        if session_url:
-            text += f"  |  <{session_url}|View Devin session>"
-        if files_changed:
-            text += f"\n_Files changed: {', '.join(files_changed)}_"
-    else:
-        text = f"*{name}*\n{description}\n:warning: _This variant failed to generate._"
+    if not success:
+        slack_client.chat_postMessage(
+            channel=channel,
+            text=f"*{name}*\n{description}\n:warning: _This variant didn't finish generating._",
+            thread_ts=thread_ts,
+        )
+        return
 
+    # Try to download and upload the screenshot to Slack
+    if screenshot_urls:
+        for url in screenshot_urls:
+            try:
+                resp = req.get(url, timeout=30)
+                if resp.status_code == 200:
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+                        f.write(resp.content)
+                        tmp_path = f.name
+
+                    slack_client.files_upload_v2(
+                        channel=channel,
+                        file=tmp_path,
+                        filename=f"prototype_{variant.get('key', 'x').lower()}.png",
+                        title=name,
+                        initial_comment=f"*{name}*\n{description}",
+                        thread_ts=thread_ts,
+                    )
+                    return
+            except Exception as e:
+                print(f"Failed to download/upload screenshot: {e}")
+
+    # Fallback: just post the text description
     slack_client.chat_postMessage(
         channel=channel,
-        text=text,
+        text=f"*{name}*\n{description}",
         thread_ts=thread_ts,
     )
 
