@@ -69,6 +69,7 @@ def _derive_client_id(channel_name: str) -> str:
 @app.event("app_mention")
 def handle_mention(event, say, client):
     """Handle @agent mentions in client channels."""
+    print(f"[handle_mention] Received mention event: {event}")
     channel = event["channel"]
     user = event["user"]
     text = event.get("text", "").strip()
@@ -117,6 +118,7 @@ def handle_mention(event, say, client):
 @app.event("message")
 def handle_message(event, say, client):
     """Handle direct messages in threads (no @mention needed after first message)."""
+    print(f"[handle_message] Received message event: subtype={event.get('subtype')}, thread_ts={event.get('thread_ts')}, bot_id={event.get('bot_id')}")
     # Only process threaded replies
     thread_ts = event.get("thread_ts")
     if not thread_ts:
@@ -158,34 +160,42 @@ def _handle_scoping(convo, convo_key, text, say, slack_client, channel, thread_t
     """Handle messages during the scoping phase."""
     client_id = convo["client_id"]
 
-    # Get agent response
-    response = scoping_agent.get_response(
-        client_id=client_id,
-        conversation_history=convo["history"],
-        user_message=text,
-    )
+    try:
+        print(f"[_handle_scoping] Getting agent response for client_id={client_id}, text={text[:80]}")
+        # Get agent response
+        response = scoping_agent.get_response(
+            client_id=client_id,
+            conversation_history=convo["history"],
+            user_message=text,
+        )
+        print(f"[_handle_scoping] Agent response: {response[:200]}")
 
-    # Update conversation history
-    convo["history"].append({"role": "user", "content": text})
-    convo["history"].append({"role": "assistant", "content": response})
+        # Update conversation history
+        convo["history"].append({"role": "user", "content": text})
+        convo["history"].append({"role": "assistant", "content": response})
 
-    # Check if ready to prototype
-    if scoping_agent.is_ready_to_prototype(response):
-        # Clean the marker from the displayed response
-        display_response = response.replace("[READY_TO_PROTOTYPE]", "").strip()
-        say(text=display_response, thread_ts=thread_ts)
+        # Check if ready to prototype
+        if scoping_agent.is_ready_to_prototype(response):
+            # Clean the marker from the displayed response
+            display_response = response.replace("[READY_TO_PROTOTYPE]", "").strip()
+            say(text=display_response, thread_ts=thread_ts)
 
-        convo["phase"] = "prototyping"
-        _generate_and_send_prototypes(convo, say, slack_client, channel, thread_ts)
-        return
+            convo["phase"] = "prototyping"
+            _generate_and_send_prototypes(convo, say, slack_client, channel, thread_ts)
+            return
 
-    # Check if ready to submit (can happen in one step for simple requests)
-    if scoping_agent.is_ready_to_submit(response):
-        _handle_submit(convo, response, say, slack_client, channel, thread_ts)
-        return
+        # Check if ready to submit (can happen in one step for simple requests)
+        if scoping_agent.is_ready_to_submit(response):
+            _handle_submit(convo, response, say, slack_client, channel, thread_ts)
+            return
 
-    # Regular scoping response
-    say(text=response, thread_ts=thread_ts)
+        # Regular scoping response
+        say(text=response, thread_ts=thread_ts)
+    except Exception as e:
+        print(f"[_handle_scoping] ERROR: {e}")
+        import traceback
+        traceback.print_exc()
+        say(text="Sorry, I ran into an issue processing your message. Could you try again?", thread_ts=thread_ts)
 
 
 def _generate_and_send_prototypes(convo, say, slack_client, channel, thread_ts):
