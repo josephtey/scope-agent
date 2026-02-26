@@ -113,6 +113,7 @@ def _format_devin_results_for_slack(results: list[dict]) -> list[dict]:
 
         formatted.append({
             "key": key,
+            "session_id": result.get("session_id", ""),
             "name": structured.get("variant_name", result.get("variant_name", f"Option {key}")),
             "description": structured.get("description", result.get("variant_approach", "No description")),
             "session_url": result.get("url", ""),

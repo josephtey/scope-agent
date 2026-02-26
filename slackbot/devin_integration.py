@@ -328,6 +328,27 @@ def poll_session(
     return None
 
 
+def delete_session(session_id: str) -> bool:
+    """Terminate a Devin session to free up concurrency slots."""
+    if not is_configured():
+        return False
+
+    try:
+        resp = requests.delete(
+            f"{BASE_URL}/sessions/{session_id}",
+            headers=_headers(),
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            print(f"[delete_session] Terminated {session_id}")
+            return True
+        print(f"[delete_session] Failed to terminate {session_id}: {resp.status_code}")
+        return False
+    except requests.RequestException as e:
+        print(f"[delete_session] Error terminating {session_id}: {e}")
+        return False
+
+
 def send_message(session_id: str, message: str) -> bool:
     """Send a message to an active Devin session."""
     if not is_configured():
