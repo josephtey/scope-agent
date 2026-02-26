@@ -337,8 +337,14 @@ def generate_screenshots_sync(output_dir: str) -> dict[str, str]:
 # --- Unified Interface ---
 
 def should_use_devin() -> bool:
-    """Check if we should use real Devin sessions or fall back to local."""
-    return devin_integration.is_configured()
+    """Check if we should use real Devin sessions or fall back to local screenshots.
+
+    Currently always returns False — we use local Playwright screenshots
+    for quick visual prototypes. Devin sessions (which create real PRs)
+    are available but reserved for the final build phase, not the
+    rapid-iteration prototyping loop.
+    """
+    return False
 
 
 def generate_prototypes(
