@@ -55,7 +55,17 @@ def generate_variant_approaches(feature_description: str) -> list[dict]:
                 temperature=0.8,
                 max_tokens=500,
             )
-            approaches = json.loads(response.choices[0].message.content)
+            raw = response.choices[0].message.content or ""
+            # Strip markdown code block wrappers if present
+            raw = raw.strip()
+            if raw.startswith("```"):
+                # Remove opening ```json or ``` line
+                first_newline = raw.index("\n")
+                raw = raw[first_newline + 1:]
+                # Remove closing ```
+                if raw.endswith("```"):
+                    raw = raw[:-3].strip()
+            approaches = json.loads(raw)
             if isinstance(approaches, list) and len(approaches) >= 3:
                 return approaches[:3]
     except Exception as e:
@@ -327,8 +337,14 @@ def generate_screenshots_sync(output_dir: str) -> dict[str, str]:
 # --- Unified Interface ---
 
 def should_use_devin() -> bool:
-    """Check if we should use real Devin sessions or fall back to local."""
-    return devin_integration.is_configured()
+    """Check if we should use real Devin sessions or fall back to local screenshots.
+
+    Currently always returns False — we use local Playwright screenshots
+    for quick visual prototypes. Devin sessions (which create real PRs)
+    are available but reserved for the final build phase, not the
+    rapid-iteration prototyping loop.
+    """
+    return False
 
 
 def generate_prototypes(

@@ -200,26 +200,15 @@ def _generate_and_send_prototypes(convo, say, slack_client, channel, thread_ts):
     # Build a feature description from conversation history
     feature_description = _extract_feature_description(convo)
 
-    if prototype_generator.should_use_devin():
-        say(
-            text=":art: Spinning up 3 Devin sessions to build prototype variants on the real codebase...",
-            thread_ts=thread_ts,
-        )
-    else:
-        say(
-            text=":art: Generating 3 prototype variants for you to compare...",
-            thread_ts=thread_ts,
-        )
+    say(
+        text=":art: Great — I'm going to prototype a few versions for you. Be right back!",
+        thread_ts=thread_ts,
+    )
 
     def _generate():
         result = prototype_generator.generate_prototypes(
             feature_description=feature_description,
             client_id=client_id,
-            on_session_created=lambda sessions: slack_client.chat_postMessage(
-                channel=channel,
-                text=f":gear: {len(sessions)} Devin sessions started. I'll share the results as they complete...",
-                thread_ts=thread_ts,
-            ),
         )
 
         mode = result["mode"]
@@ -235,10 +224,8 @@ def _generate_and_send_prototypes(convo, say, slack_client, channel, thread_ts):
         slack_client.chat_postMessage(
             channel=channel,
             text=(
-                "Which option do you prefer? You can:\n"
-                "- Pick one (e.g., 'I like Option C')\n"
-                "- Mix and match (e.g., 'I like A's dropdown but C's subtotal rows')\n"
-                "- Ask for changes to any option"
+                "Here are a few ideas! Which direction feels right to you?\n"
+                "You can pick one, mix and match parts you like, or tell me what to change."
             ),
             thread_ts=thread_ts,
         )
@@ -321,9 +308,8 @@ def _handle_prototype_feedback(convo, convo_key, text, say, slack_client, channe
         f"- {v.get('name', 'Variant')}: {v.get('description', '')}" for v in variants_list
     )
     mode = proto_results.get("mode", "local")
-    mode_note = " (each with a real PR on the codebase)" if mode == "devin" else ""
     context_msg = (
-        f"The client was shown these 3 prototype variants{mode_note}:\n{variant_context}\n\n"
+        f"The client was shown these 3 prototype variants:\n{variant_context}\n\n"
         f"The client's feedback is: {text}"
     )
 

@@ -266,6 +266,12 @@ def is_session_done(session: dict) -> bool:
     if status_enum in ("finished", "expired"):
         return True
 
+    # Blocked sessions won't auto-resolve without human intervention.
+    # For prototype generation, if a session is blocked it has likely
+    # completed its main work (e.g., created a PR) and hit a follow-up issue.
+    if status_enum == "blocked":
+        return True
+
     return False
 
 
