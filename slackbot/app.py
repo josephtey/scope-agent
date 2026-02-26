@@ -22,6 +22,7 @@ from slack_bolt.adapter.socket_mode import SocketModeHandler
 import config
 import scoping_agent
 import prototype_generator
+import devin_integration
 import github_issue
 import client_model
 
@@ -188,49 +189,48 @@ def _handle_scoping(convo, convo_key, text, say, slack_client, channel, thread_t
 
 
 def _generate_and_send_prototypes(convo, say, slack_client, channel, thread_ts):
-    """Generate 3 prototype variants and post screenshots to the thread."""
+    """Generate 3 prototype variants and post to the thread.
+
+    Uses Devin API if configured (creates real PRs on sample-client-project),
+    otherwise falls back to local Playwright screenshots.
+    """
     convo["prototype_round"] += 1
+    client_id = convo["client_id"]
 
-    say(
-        text=":art: Generating 3 prototype variants for you to compare...",
-        thread_ts=thread_ts,
-    )
+    # Build a feature description from conversation history
+    feature_description = _extract_feature_description(convo)
 
-    # Generate screenshots in a background thread to not block
+    if prototype_generator.should_use_devin():
+        say(
+            text=":art: Spinning up 3 Devin sessions to build prototype variants on the real codebase...",
+            thread_ts=thread_ts,
+        )
+    else:
+        say(
+            text=":art: Generating 3 prototype variants for you to compare...",
+            thread_ts=thread_ts,
+        )
+
     def _generate():
-        output_dir = tempfile.mkdtemp(prefix="scope_agent_variants_")
-        screenshot_paths = prototype_generator.generate_screenshots_sync(output_dir)
-        variants = prototype_generator.get_variant_descriptions()
+        result = prototype_generator.generate_prototypes(
+            feature_description=feature_description,
+            client_id=client_id,
+            on_session_created=lambda sessions: slack_client.chat_postMessage(
+                channel=channel,
+                text=f":gear: {len(sessions)} Devin sessions started. I'll share the results as they complete...",
+                thread_ts=thread_ts,
+            ),
+        )
+
+        mode = result["mode"]
+        variants = result["variants"]
+        convo["prototype_results"] = result  # Store for later reference
 
         for variant in variants:
-            key = variant["key"]
-            path = screenshot_paths.get(key)
-
-            if path and path.endswith(".png"):
-                # Upload screenshot to Slack
-                try:
-                    result = slack_client.files_upload_v2(
-                        channel=channel,
-                        file=path,
-                        filename=f"prototype_{key.lower()}.png",
-                        title=variant["name"],
-                        initial_comment=f"*{variant['name']}*\n{variant['description']}",
-                        thread_ts=thread_ts,
-                    )
-                except Exception as e:
-                    # Fallback: send description only
-                    slack_client.chat_postMessage(
-                        channel=channel,
-                        text=f"*{variant['name']}*\n{variant['description']}\n_(Screenshot generation unavailable)_",
-                        thread_ts=thread_ts,
-                    )
+            if mode == "devin":
+                _send_devin_variant(variant, slack_client, channel, thread_ts)
             else:
-                # HTML fallback
-                slack_client.chat_postMessage(
-                    channel=channel,
-                    text=f"*{variant['name']}*\n{variant['description']}",
-                    thread_ts=thread_ts,
-                )
+                _send_local_variant(variant, slack_client, channel, thread_ts)
 
         slack_client.chat_postMessage(
             channel=channel,
@@ -247,17 +247,83 @@ def _generate_and_send_prototypes(convo, say, slack_client, channel, thread_ts):
     thread.start()
 
 
+def _extract_feature_description(convo: dict) -> str:
+    """Extract a feature description from the conversation history."""
+    user_msgs = [m["content"] for m in convo["history"] if m["role"] == "user"]
+    assistant_msgs = [m["content"] for m in convo["history"] if m["role"] == "assistant"]
+    if user_msgs:
+        return " | ".join(user_msgs[-3:])  # Last 3 user messages as context
+    return "Feature customization request"
+
+
+def _send_devin_variant(variant: dict, slack_client, channel: str, thread_ts: str):
+    """Send a Devin-generated variant to Slack."""
+    name = variant.get("name", "Variant")
+    description = variant.get("description", "")
+    pr_url = variant.get("pr_url", "")
+    session_url = variant.get("session_url", "")
+    files_changed = variant.get("files_changed", [])
+    success = variant.get("success", False)
+
+    if success:
+        text = f"*{name}*\n{description}"
+        if pr_url:
+            text += f"\n:link: <{pr_url}|View PR>"
+        if session_url:
+            text += f"  |  <{session_url}|View Devin session>"
+        if files_changed:
+            text += f"\n_Files changed: {', '.join(files_changed)}_"
+    else:
+        text = f"*{name}*\n{description}\n:warning: _This variant failed to generate._"
+
+    slack_client.chat_postMessage(
+        channel=channel,
+        text=text,
+        thread_ts=thread_ts,
+    )
+
+
+def _send_local_variant(variant: dict, slack_client, channel: str, thread_ts: str):
+    """Send a locally-generated variant screenshot to Slack."""
+    name = variant.get("name", "Variant")
+    description = variant.get("description", "")
+    path = variant.get("screenshot_path", "")
+
+    if path and path.endswith(".png"):
+        try:
+            slack_client.files_upload_v2(
+                channel=channel,
+                file=path,
+                filename=f"prototype_{variant.get('key', 'x').lower()}.png",
+                title=name,
+                initial_comment=f"*{name}*\n{description}",
+                thread_ts=thread_ts,
+            )
+            return
+        except Exception:
+            pass
+
+    slack_client.chat_postMessage(
+        channel=channel,
+        text=f"*{name}*\n{description}",
+        thread_ts=thread_ts,
+    )
+
+
 def _handle_prototype_feedback(convo, convo_key, text, say, slack_client, channel, thread_ts):
     """Handle client feedback on prototypes."""
     client_id = convo["client_id"]
 
-    # Add prototype context to the conversation
-    variants = prototype_generator.get_variant_descriptions()
+    # Build variant context from whatever was generated (Devin or local)
+    proto_results = convo.get("prototype_results", {})
+    variants_list = proto_results.get("variants", prototype_generator.get_variant_descriptions())
     variant_context = "\n".join(
-        f"- {v['name']}: {v['description']}" for v in variants
+        f"- {v.get('name', 'Variant')}: {v.get('description', '')}" for v in variants_list
     )
+    mode = proto_results.get("mode", "local")
+    mode_note = " (each with a real PR on the codebase)" if mode == "devin" else ""
     context_msg = (
-        f"The client was shown these 3 prototype variants:\n{variant_context}\n\n"
+        f"The client was shown these 3 prototype variants{mode_note}:\n{variant_context}\n\n"
         f"The client's feedback is: {text}"
     )
 
@@ -408,6 +474,22 @@ def _run_demo():
     print("=" * 60)
     print("SCOPE AGENT — Interactive Demo")
     print("=" * 60)
+
+    # Show mode info
+    if devin_integration.is_configured():
+        print("\nMODE: Devin API (real prototype generation)")
+        conn = devin_integration.test_connection()
+        if conn["ok"]:
+            print("Devin API: Connected")
+        else:
+            print(f"Devin API: Connection issue — {conn.get('error', 'unknown')}")
+            print("Will fall back to local screenshot generation.")
+    else:
+        print("\nMODE: Local (Playwright screenshots)")
+        print("Set DEVIN_API_KEY to enable real prototype generation.")
+
+    print(f"Target repo: {config.CLIENT_PROJECT_REPO}")
+    print(f"GitHub issues: {config.GITHUB_REPO}")
     print("\nYou are a client talking to the scoping agent.")
     print("Try describing a feature you want for your dashboard.")
     print("Type 'quit' to exit.\n")
@@ -436,14 +518,25 @@ def _run_demo():
 
         if scoping_agent.is_ready_to_prototype(response):
             print("\n--- PROTOTYPE PHASE ---")
-            print("Generating 3 visual variants...")
-            output_dir = tempfile.mkdtemp(prefix="scope_demo_")
-            paths = prototype_generator.generate_screenshots_sync(output_dir)
-            variants = prototype_generator.get_variant_descriptions()
-            for v in variants:
-                path = paths.get(v["key"], "")
-                print(f"\n  {v['name']}: {v['description']}")
-                print(f"  File: {path}")
+            feature_desc = " | ".join(
+                m["content"] for m in history if m["role"] == "user"
+            )[-500:]
+
+            result = prototype_generator.generate_prototypes(
+                feature_description=feature_desc,
+                client_id=client_id,
+            )
+
+            mode = result["mode"]
+            print(f"Mode: {mode}")
+            for v in result["variants"]:
+                print(f"\n  {v.get('name', 'Variant')}: {v.get('description', '')}")
+                if v.get("pr_url"):
+                    print(f"  PR: {v['pr_url']}")
+                if v.get("session_url"):
+                    print(f"  Session: {v['session_url']}")
+                if v.get("screenshot_path"):
+                    print(f"  File: {v['screenshot_path']}")
             print("\n--- Pick one or give feedback ---")
 
         if scoping_agent.is_ready_to_submit(response):
