@@ -1,0 +1,166 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #f5f7fa;
+  color: #1a1a2e;
+}
+
+.app-header {
+  background: #1a1a2e;
+  color: white;
+  padding: 16px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logo {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+nav {
+  display: flex;
+  gap: 24px;
+  font-size: 14px;
+}
+
+nav span {
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+nav .nav-active {
+  opacity: 1;
+  font-weight: 600;
+}
+
+.app-main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px;
+}
+
+.app-main h1 {
+  font-size: 24px;
+  margin-bottom: 24px;
+  font-weight: 600;
+}
+
+.dashboard-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.card {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.card h2 {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: #444;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 2px solid #e8eaed;
+  font-weight: 600;
+  color: #666;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+tr:hover td {
+  background: #f8f9fb;
+}
+
+.tier-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tier-gold {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.tier-silver {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.tier-bronze {
+  background: #fed7aa;
+  color: #9a3412;
+}
+
+.mrr-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.mrr-total {
+  font-weight: 700;
+  color: #1a1a2e;
+}
+
+.subtotal-row td {
+  background: #f8f9fb;
+  font-weight: 600;
+  border-top: 1px solid #e8eaed;
+}
+
+.filter-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.filter-btn {
+  padding: 6px 14px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  background: white;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.filter-btn:hover {
+  border-color: #999;
+}
+
+.filter-btn.active {
+  background: #1a1a2e;
+  color: white;
+  border-color: #1a1a2e;
+}
