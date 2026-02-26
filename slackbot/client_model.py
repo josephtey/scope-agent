@@ -2,8 +2,9 @@
 Client Model — persistent knowledge about each client.
 
 Stores preferences, domain context, historical requests, and stakeholder info.
-In production, this would map to Devin Knowledge Notes API.
-For the prototype, we use local JSON files.
+Uses local JSON files as the primary store, and optionally syncs to
+Devin Knowledge Notes API so that Devin sessions automatically recall
+client context when generating prototypes.
 """
 
 import json
@@ -109,5 +110,83 @@ def get_context_summary(client_id: str) -> str:
         recent = history[-5:]
         summaries = [f"- {r.get('title', 'Untitled')} ({r.get('status', 'unknown')})" for r in recent]
         parts.append(f"Recent requests:\n" + "\n".join(summaries))
+
+    return "\n".join(parts)
+
+
+# --- Devin Knowledge Notes Sync ---
+
+# Cache of knowledge note IDs per client (client_id -> note_id)
+_knowledge_note_ids: dict[str, str] = {}
+
+
+def sync_to_knowledge_notes(client_id: str) -> Optional[str]:
+    """
+    Sync the client model to a Devin Knowledge Note.
+
+    This ensures Devin sessions automatically recall client context
+    when generating prototypes for this client.
+
+    Returns the knowledge note ID or None if sync is unavailable.
+    """
+    try:
+        import devin_integration
+    except ImportError:
+        return None
+
+    if not devin_integration.is_configured():
+        return None
+
+    model = load_model(client_id)
+    content = _format_knowledge_note(model)
+    existing_note_id = _knowledge_note_ids.get(client_id) or model.get("knowledge_note_id")
+
+    note_id = devin_integration.sync_knowledge_note(
+        client_id=client_id,
+        content=content,
+        note_id=existing_note_id,
+        trigger_description=f"Working on features for client {model.get('client_name', client_id)}",
+    )
+
+    if note_id:
+        _knowledge_note_ids[client_id] = note_id
+        # Persist the note ID in the local model too
+        model["knowledge_note_id"] = note_id
+        save_model(client_id, model)
+
+    return note_id
+
+
+def _format_knowledge_note(model: dict) -> str:
+    """Format a client model as a Knowledge Note body."""
+    parts = [
+        f"# Client Model: {model.get('client_name', model.get('client_id', 'Unknown'))}",
+        "",
+    ]
+
+    prefs = model.get("preferences", {})
+    if any(prefs.values()):
+        parts.append("## Preferences")
+        for key, values in prefs.items():
+            if values:
+                parts.append(f"- **{key}**: {', '.join(values)}")
+        parts.append("")
+
+    domain = model.get("domain_context", {})
+    if any(domain.values()):
+        parts.append("## Domain Context")
+        for key, values in domain.items():
+            if values:
+                parts.append(f"- **{key}**: {', '.join(values) if isinstance(values, list) else values}")
+        parts.append("")
+
+    history = model.get("request_history", [])
+    if history:
+        parts.append("## Request History")
+        for req in history[-10:]:
+            title = req.get("title", "Untitled")
+            status = req.get("status", "unknown")
+            parts.append(f"- {title} ({status})")
+        parts.append("")
 
     return "\n".join(parts)
