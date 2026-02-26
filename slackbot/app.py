@@ -287,6 +287,12 @@ def _generate_and_send_prototypes(convo, say, slack_client, channel, thread_ts):
                 ),
                 thread_ts=thread_ts,
             )
+
+            # Auto-cleanup: kill Devin sessions to free concurrency slots
+            for variant in variants:
+                session_id = variant.get("session_id", "")
+                if session_id:
+                    devin_integration.delete_session(session_id)
         except Exception as e:
             print(f"[_generate] ERROR: {e}")
             import traceback
