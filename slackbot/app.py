@@ -206,29 +206,41 @@ def _generate_and_send_prototypes(convo, say, slack_client, channel, thread_ts):
     )
 
     def _generate():
-        result = prototype_generator.generate_prototypes(
-            feature_description=feature_description,
-            client_id=client_id,
-        )
+        try:
+            result = prototype_generator.generate_prototypes(
+                feature_description=feature_description,
+                client_id=client_id,
+            )
 
-        mode = result["mode"]
-        variants = result["variants"]
-        convo["prototype_results"] = result  # Store for later reference
+            mode = result["mode"]
+            variants = result["variants"]
+            convo["prototype_results"] = result  # Store for later reference
 
-        for variant in variants:
-            if mode == "devin":
-                _send_devin_variant(variant, slack_client, channel, thread_ts)
-            else:
-                _send_local_variant(variant, slack_client, channel, thread_ts)
+            print(f"[_generate] mode={mode}, num_variants={len(variants)}")
+            for variant in variants:
+                print(f"[_generate] Sending variant: {variant.get('name')}, success={variant.get('success')}, screenshots={variant.get('screenshot_urls', [])}")
+                if mode == "devin":
+                    _send_devin_variant(variant, slack_client, channel, thread_ts)
+                else:
+                    _send_local_variant(variant, slack_client, channel, thread_ts)
 
-        slack_client.chat_postMessage(
-            channel=channel,
-            text=(
-                "Here are a few ideas! Which direction feels right to you?\n"
-                "You can pick one, mix and match parts you like, or tell me what to change."
-            ),
-            thread_ts=thread_ts,
-        )
+            slack_client.chat_postMessage(
+                channel=channel,
+                text=(
+                    "Here are a few ideas! Which direction feels right to you?\n"
+                    "You can pick one, mix and match parts you like, or tell me what to change."
+                ),
+                thread_ts=thread_ts,
+            )
+        except Exception as e:
+            print(f"[_generate] ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+            slack_client.chat_postMessage(
+                channel=channel,
+                text=":warning: Sorry, something went wrong generating the prototypes. Let me try again.",
+                thread_ts=thread_ts,
+            )
 
     thread = threading.Thread(target=_generate)
     thread.start()
@@ -253,6 +265,8 @@ def _send_devin_variant(variant: dict, slack_client, channel: str, thread_ts: st
     screenshot_urls = variant.get("screenshot_urls", [])
     success = variant.get("success", False)
 
+    print(f"[send_devin_variant] name={name}, success={success}, screenshot_urls={screenshot_urls}")
+
     if not success:
         slack_client.chat_postMessage(
             channel=channel,
@@ -262,11 +276,21 @@ def _send_devin_variant(variant: dict, slack_client, channel: str, thread_ts: st
         return
 
     # Try to download and upload the screenshot to Slack
+    # Devin attachment URLs must go through api.devin.ai/v1/attachments/ (requires Bearer auth)
+    auth_headers = {"Authorization": f"Bearer {config.DEVIN_API_KEY}"}
+
     if screenshot_urls:
         for url in screenshot_urls:
             try:
-                resp = req.get(url, timeout=30)
-                if resp.status_code == 200:
+                # Rewrite app.devin.ai/attachments/ → api.devin.ai/v1/attachments/
+                download_url = url.replace(
+                    "https://app.devin.ai/attachments/",
+                    "https://api.devin.ai/v1/attachments/",
+                )
+                print(f"[send_devin_variant] Downloading screenshot: {download_url}")
+                resp = req.get(download_url, headers=auth_headers, timeout=30, allow_redirects=True)
+                print(f"[send_devin_variant] Download status: {resp.status_code}, size: {len(resp.content)}")
+                if resp.status_code == 200 and len(resp.content) > 100:
                     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                         f.write(resp.content)
                         tmp_path = f.name
@@ -279,11 +303,17 @@ def _send_devin_variant(variant: dict, slack_client, channel: str, thread_ts: st
                         initial_comment=f"*{name}*\n{description}",
                         thread_ts=thread_ts,
                     )
+                    print(f"[send_devin_variant] Uploaded screenshot to Slack for {name}")
                     return
+                else:
+                    print(f"[send_devin_variant] Bad response: status={resp.status_code}")
             except Exception as e:
-                print(f"Failed to download/upload screenshot: {e}")
+                print(f"[send_devin_variant] Failed to download/upload screenshot: {e}")
+                import traceback
+                traceback.print_exc()
 
     # Fallback: just post the text description
+    print(f"[send_devin_variant] Falling back to text for {name}")
     slack_client.chat_postMessage(
         channel=channel,
         text=f"*{name}*\n{description}",

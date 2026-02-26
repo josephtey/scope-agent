@@ -9,7 +9,7 @@ questions, and decides when a request is specific enough to prototype.
 import json
 from typing import Optional
 
-from openai import OpenAI
+import anthropic
 
 import config
 from client_model import get_context_summary, load_model
@@ -83,11 +83,11 @@ When you say [READY_TO_SUBMIT], provide a structured feature spec in this EXACT 
 """
 
 
-def create_client() -> Optional[OpenAI]:
-    """Create an OpenAI client if API key is configured."""
-    if not config.OPENAI_API_KEY:
+def create_client() -> Optional[anthropic.Anthropic]:
+    """Create an Anthropic client if API key is configured."""
+    if not config.ANTHROPIC_API_KEY:
         return None
-    return OpenAI(api_key=config.OPENAI_API_KEY)
+    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
 
 def build_messages(
@@ -130,14 +130,24 @@ def get_response(
 
     messages = build_messages(client_id, conversation_history, user_message)
 
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=messages,
+    # Anthropic requires system prompt separate from messages
+    system_content = ""
+    chat_messages = []
+    for msg in messages:
+        if msg["role"] == "system":
+            system_content += msg["content"] + "\n\n"
+        else:
+            chat_messages.append(msg)
+
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        system=system_content.strip(),
+        messages=chat_messages,
         temperature=0.7,
         max_tokens=500,
     )
 
-    return response.choices[0].message.content
+    return response.content[0].text
 
 
 def extract_feature_spec(response_text: str) -> Optional[dict]:
