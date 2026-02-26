@@ -1,21 +1,16 @@
 """
-Prototype Generator — creates visual variants of dashboard features.
+Prototype Generator — creates visual variants of dashboard features using Devin API.
 
-Two modes:
-1. DEVIN MODE (production): Spins up 3 parallel Devin sessions via the API,
-   each implementing a different variant of the requested feature on the real
-   client project repo (josephtey/sample-client-project).
-2. LOCAL MODE (fallback): Generates static HTML screenshots via Playwright
-   when the Devin API is unavailable.
+Spins up 3 parallel Devin sessions via the API, each implementing a different variant
+of the requested feature on the real client project repo (josephtey/sample-client-project).
+Each session modifies the code, runs the app, takes a browser screenshot, and returns
+the screenshot URL.
 
 The scoping agent decides when to prototype and provides the feature description.
-This module generates 3 variant approaches and either delegates to Devin or
-renders local previews.
+This module generates 3 variant approaches and delegates to Devin.
 """
 
-import os
 import json
-import asyncio
 from typing import Optional
 
 import devin_integration
@@ -99,59 +94,17 @@ def generate_variant_approaches(feature_description: str) -> list[dict]:
 
 # --- Devin-Powered Prototype Generation ---
 
-def generate_prototypes_with_devin(
-    feature_description: str,
-    client_id: str = "",
-    on_session_created: Optional[callable] = None,
-    on_variant_complete: Optional[callable] = None,
-) -> list[dict]:
-    """
-    Generate 3 prototype variants using real Devin sessions.
-
-    Each session clones the client project repo, implements one variant,
-    creates a PR, and returns structured output with details.
-
-    Args:
-        feature_description: The scoped feature request
-        client_id: Client ID for loading preferences
-        on_session_created: Callback(sessions_list) when sessions are created
-        on_variant_complete: Callback(result) for each completed variant
-
-    Returns list of result dicts with variant info, PR URLs, etc.
-    """
-    variant_approaches = generate_variant_approaches(feature_description)
-    client_context = get_context_summary(client_id) if client_id else ""
-
-    # Create 3 parallel Devin sessions
-    sessions = devin_integration.create_prototype_sessions(
-        feature_description=feature_description,
-        variant_approaches=variant_approaches,
-        client_context=client_context,
-    )
-
-    if not sessions:
-        print("No Devin sessions created — all failed")
-        return []
-
-    if on_session_created:
-        on_session_created(sessions)
-
-    # Poll until all complete
-    results = devin_integration.poll_prototype_sessions(
-        sessions=sessions,
-        on_variant_complete=on_variant_complete,
-    )
-
-    return results
+def get_variant_descriptions() -> list[dict]:
+    """Return default variant descriptions (used as context when prototype_results are missing)."""
+    return [
+        {"key": "A", "name": "Option A — Dropdown Filter", "description": "Simple dropdown to filter."},
+        {"key": "B", "name": "Option B — Tabbed View", "description": "Horizontal tabs for each category."},
+        {"key": "C", "name": "Option C — Inline Controls + Summary", "description": "Filter controls plus summary rows."},
+    ]
 
 
-def format_devin_results_for_slack(results: list[dict]) -> list[dict]:
-    """
-    Format Devin prototype results into a Slack-friendly format.
-
-    Each result now includes screenshot_urls extracted from session messages
-    (ATTACHMENT:"https://app.devin.ai/attachments/..." URLs).
-    """
+def _format_devin_results_for_slack(results: list[dict]) -> list[dict]:
+    """Format Devin prototype results into a Slack-friendly format."""
     formatted = []
     for i, result in enumerate(results):
         key = chr(65 + i)  # A, B, C
@@ -170,227 +123,51 @@ def format_devin_results_for_slack(results: list[dict]) -> list[dict]:
     return formatted
 
 
-# --- Local Fallback (static HTML + Playwright screenshots) ---
-
-FALLBACK_VARIANT_A_HTML = """<!DOCTYPE html>
-<html><head><style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f7fa; padding: 32px; }
-.card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); max-width: 900px; margin: 0 auto; }
-h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: #444; }
-.label { font-size: 12px; font-weight: 600; color: #666; text-transform: uppercase; margin-bottom: 6px; }
-select { padding: 8px 12px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 14px; margin-bottom: 16px; }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th { text-align: left; padding: 10px 12px; border-bottom: 2px solid #e8eaed; font-weight: 600; color: #666; font-size: 12px; text-transform: uppercase; }
-td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
-.val { font-weight: 600; } .total { font-weight: 700; color: #1a1a2e; }
-.approach-label { font-size: 13px; color: #6366f1; font-weight: 600; margin-bottom: 12px; }
-</style></head><body>
-<div class="card">
-  <div class="approach-label">Option A — Dropdown Filter</div>
-  <h2>Monthly Recurring Revenue</h2>
-  <div class="label">Filter by Tier</div>
-  <select><option selected>All Tiers</option><option>Gold</option><option>Silver</option><option>Bronze</option></select>
-  <table>
-    <thead><tr><th>Month</th><th>Total MRR</th><th>Gold</th><th>Silver</th><th>Bronze</th></tr></thead>
-    <tbody>
-      <tr><td>Sep 2025</td><td class="val total">$72,000</td><td class="val">$38,000</td><td class="val">$24,000</td><td class="val">$10,000</td></tr>
-      <tr><td>Oct 2025</td><td class="val total">$75,200</td><td class="val">$39,500</td><td class="val">$25,200</td><td class="val">$10,500</td></tr>
-      <tr><td>Nov 2025</td><td class="val total">$78,100</td><td class="val">$41,000</td><td class="val">$26,600</td><td class="val">$10,500</td></tr>
-    </tbody>
-  </table>
-</div></body></html>"""
-
-FALLBACK_VARIANT_B_HTML = """<!DOCTYPE html>
-<html><head><style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f7fa; padding: 32px; }
-.card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); max-width: 900px; margin: 0 auto; }
-h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: #444; }
-.tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 2px solid #e8eaed; }
-.tab { padding: 10px 20px; font-size: 14px; font-weight: 500; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -2px; color: #888; }
-.tab.active { color: #1a1a2e; border-bottom-color: #6366f1; font-weight: 600; }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th { text-align: left; padding: 10px 12px; border-bottom: 2px solid #e8eaed; font-weight: 600; color: #666; font-size: 12px; text-transform: uppercase; }
-td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
-.val { font-weight: 600; } .total { font-weight: 700; color: #1a1a2e; }
-.approach-label { font-size: 13px; color: #6366f1; font-weight: 600; margin-bottom: 12px; }
-</style></head><body>
-<div class="card">
-  <div class="approach-label">Option B — Tabbed View by Tier</div>
-  <h2>Monthly Recurring Revenue</h2>
-  <div class="tabs"><div class="tab active">All Tiers</div><div class="tab">Gold</div><div class="tab">Silver</div><div class="tab">Bronze</div></div>
-  <table>
-    <thead><tr><th>Month</th><th>Total MRR</th><th>Gold</th><th>Silver</th><th>Bronze</th></tr></thead>
-    <tbody>
-      <tr><td>Sep 2025</td><td class="val total">$72,000</td><td class="val">$38,000</td><td class="val">$24,000</td><td class="val">$10,000</td></tr>
-      <tr><td>Oct 2025</td><td class="val total">$75,200</td><td class="val">$39,500</td><td class="val">$25,200</td><td class="val">$10,500</td></tr>
-      <tr><td>Nov 2025</td><td class="val total">$78,100</td><td class="val">$41,000</td><td class="val">$26,600</td><td class="val">$10,500</td></tr>
-    </tbody>
-  </table>
-</div></body></html>"""
-
-FALLBACK_VARIANT_C_HTML = """<!DOCTYPE html>
-<html><head><style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f7fa; padding: 32px; }
-.card { background: white; border-radius: 12px; padding: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); max-width: 900px; margin: 0 auto; }
-h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; color: #444; }
-.label { font-size: 12px; font-weight: 600; color: #666; text-transform: uppercase; margin-bottom: 6px; }
-select { padding: 8px 12px; border: 1px solid #e0e0e0; border-radius: 8px; font-size: 14px; margin-bottom: 16px; }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th { text-align: left; padding: 10px 12px; border-bottom: 2px solid #e8eaed; font-weight: 600; color: #666; font-size: 12px; text-transform: uppercase; }
-td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
-.val { font-weight: 600; } .total { font-weight: 700; color: #1a1a2e; }
-.subtotal td { background: #f8f9fb; font-weight: 600; border-top: 1px solid #e0e0e0; }
-.subtotal .tier-label { color: #6366f1; font-size: 12px; text-transform: uppercase; }
-.approach-label { font-size: 13px; color: #6366f1; font-weight: 600; margin-bottom: 12px; }
-</style></head><body>
-<div class="card">
-  <div class="approach-label">Option C — Dropdown + Subtotal Rows</div>
-  <h2>Monthly Recurring Revenue</h2>
-  <div class="label">Filter by Tier</div>
-  <select><option selected>All Tiers</option><option>Gold</option><option>Silver</option><option>Bronze</option></select>
-  <table>
-    <thead><tr><th>Month</th><th>Total MRR</th><th>Gold</th><th>Silver</th><th>Bronze</th></tr></thead>
-    <tbody>
-      <tr><td>Sep 2025</td><td class="val total">$72,000</td><td class="val">$38,000</td><td class="val">$24,000</td><td class="val">$10,000</td></tr>
-      <tr><td>Oct 2025</td><td class="val total">$75,200</td><td class="val">$39,500</td><td class="val">$25,200</td><td class="val">$10,500</td></tr>
-      <tr><td>Nov 2025</td><td class="val total">$78,100</td><td class="val">$41,000</td><td class="val">$26,600</td><td class="val">$10,500</td></tr>
-      <tr class="subtotal"><td class="tier-label">GOLD SUBTOTAL</td><td class="val">$251,500</td><td></td><td></td><td></td></tr>
-      <tr class="subtotal"><td class="tier-label">SILVER SUBTOTAL</td><td class="val">$164,800</td><td></td><td></td><td></td></tr>
-      <tr class="subtotal"><td class="tier-label">BRONZE SUBTOTAL</td><td class="val">$62,100</td><td></td><td></td><td></td></tr>
-    </tbody>
-  </table>
-</div></body></html>"""
-
-FALLBACK_VARIANTS = {
-    "A": {
-        "name": "Option A — Dropdown Filter",
-        "description": "Simple dropdown at the top of the MRR table. Select a tier to filter, or 'All' to see everything. Clean and minimal.",
-        "html": FALLBACK_VARIANT_A_HTML,
-    },
-    "B": {
-        "name": "Option B — Tabbed View",
-        "description": "Horizontal tabs for each tier. Click a tab to switch views. Familiar pattern, but takes more horizontal space.",
-        "html": FALLBACK_VARIANT_B_HTML,
-    },
-    "C": {
-        "name": "Option C — Dropdown + Subtotal Rows",
-        "description": "Dropdown filter plus subtotal rows at the bottom showing totals per tier. Best of both worlds — filter when needed, summary always visible.",
-        "html": FALLBACK_VARIANT_C_HTML,
-    },
-}
-
-
-def get_variant_descriptions() -> list[dict]:
-    """Return descriptions of fallback variants (for local/demo mode)."""
-    return [
-        {"key": key, "name": v["name"], "description": v["description"]}
-        for key, v in FALLBACK_VARIANTS.items()
-    ]
-
-
-async def generate_screenshots(output_dir: str) -> dict[str, str]:
-    """
-    Generate local fallback screenshots using Playwright.
-    Returns a dict mapping variant key to screenshot file path.
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    paths = {}
-
-    try:
-        from playwright.async_api import async_playwright
-
-        async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            for key, variant in FALLBACK_VARIANTS.items():
-                page = await browser.new_page(viewport={"width": 960, "height": 600})
-                await page.set_content(variant["html"])
-                await page.wait_for_timeout(500)
-
-                screenshot_path = os.path.join(output_dir, f"variant_{key.lower()}.png")
-                await page.screenshot(path=screenshot_path, full_page=True)
-                paths[key] = screenshot_path
-
-            await browser.close()
-    except Exception as e:
-        print(f"Playwright screenshot failed ({e}), falling back to HTML files")
-        for key, variant in FALLBACK_VARIANTS.items():
-            html_path = os.path.join(output_dir, f"variant_{key.lower()}.html")
-            with open(html_path, "w") as f:
-                f.write(variant["html"])
-            paths[key] = html_path
-
-    return paths
-
-
-def generate_screenshots_sync(output_dir: str) -> dict[str, str]:
-    """Synchronous wrapper for generate_screenshots."""
-    return asyncio.run(generate_screenshots(output_dir))
-
-
-# --- Unified Interface ---
-
-def should_use_devin() -> bool:
-    """Check if we should use real Devin sessions for screenshot-based prototypes.
-
-    When configured, Devin sessions will: modify the code, run the app,
-    take a browser screenshot, and return the screenshot URL. No PRs are created.
-    Falls back to local Playwright screenshots if Devin is not configured.
-    """
-    return devin_integration.is_configured()
-
-
 def generate_prototypes(
     feature_description: str,
     client_id: str = "",
-    output_dir: str = "",
     on_session_created: Optional[callable] = None,
     on_variant_complete: Optional[callable] = None,
 ) -> dict:
     """
-    Unified prototype generation — uses Devin if available, falls back to local.
+    Generate 3 prototype variants using real Devin sessions.
+
+    Each session clones the client project repo, implements one variant,
+    runs the app, takes a screenshot, and returns the screenshot URL.
 
     Returns:
         {
-            "mode": "devin" | "local",
+            "mode": "devin",
             "variants": [...],  # list of variant result dicts
         }
     """
-    if should_use_devin():
-        print("Using Devin API for prototype generation...")
-        results = generate_prototypes_with_devin(
-            feature_description=feature_description,
-            client_id=client_id,
-            on_session_created=on_session_created,
-            on_variant_complete=on_variant_complete,
+    if not devin_integration.is_configured():
+        raise RuntimeError(
+            "Devin API is not configured. Set DEVIN_API_KEY and CLIENT_PROJECT_REPO in .env."
         )
-        if results:
-            return {
-                "mode": "devin",
-                "variants": format_devin_results_for_slack(results),
-            }
-        print("Devin sessions failed — falling back to local generation")
 
-    # Local fallback
-    print("Using local Playwright for prototype generation...")
-    if not output_dir:
-        import tempfile
-        output_dir = tempfile.mkdtemp(prefix="scope_agent_variants_")
+    print("Using Devin API for prototype generation...")
+    variant_approaches = generate_variant_approaches(feature_description)
+    client_context = get_context_summary(client_id) if client_id else ""
 
-    paths = generate_screenshots_sync(output_dir)
-    variants = []
-    for key, variant in FALLBACK_VARIANTS.items():
-        variants.append({
-            "key": key,
-            "name": variant["name"],
-            "description": variant["description"],
-            "screenshot_path": paths.get(key, ""),
-            "success": True,
-        })
+    sessions = devin_integration.create_prototype_sessions(
+        feature_description=feature_description,
+        variant_approaches=variant_approaches,
+        client_context=client_context,
+    )
+
+    if not sessions:
+        raise RuntimeError("Failed to create any Devin sessions")
+
+    if on_session_created:
+        on_session_created(sessions)
+
+    results = devin_integration.poll_prototype_sessions(
+        sessions=sessions,
+        on_variant_complete=on_variant_complete,
+    )
 
     return {
-        "mode": "local",
-        "variants": variants,
+        "mode": "devin",
+        "variants": _format_devin_results_for_slack(results),
     }
